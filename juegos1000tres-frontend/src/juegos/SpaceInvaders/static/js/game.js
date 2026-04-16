@@ -6,6 +6,7 @@ const livesText = document.getElementById('livesText');
 const gameOverScreen = document.getElementById('gameOverScreen');
 const finalScore = document.getElementById('finalScore');
 const restartBtn = document.getElementById('restartBtn');
+const roundText = document.getElementById('roundText');
 
 const COLOR_PLAYER = '#39ff14';
 const COLOR_ALIEN = '#ffffff';
@@ -142,7 +143,13 @@ let playerName = 'UNKNOWN';
 
 // Game timing (rhythm)
 let ticks = 0;
-let moveInterval = 60; // Frames before aliens move (decreases over time)
+let waveNumber = 1;
+let waveBaseSpeed = 35; // Más desafiante desde R1
+let moveInterval = waveBaseSpeed;
+let alienFireChance = 0.05; // Más disparos
+let alienBulletSpeed = 7;
+let currentFireChance = alienFireChance;
+let currentBulletSpeed = alienBulletSpeed;
 let alienDirection = 1;
 let alienStepY = 0; // If stepped down this frame
 
@@ -343,7 +350,11 @@ function initGame() {
     explosions = [];
     score = 0;
     lives = 3;
-    moveInterval = 60;
+    waveNumber = 1;
+    waveBaseSpeed = 35; 
+    moveInterval = waveBaseSpeed;
+    alienFireChance = 0.05; 
+    alienBulletSpeed = 7;
     alienDirection = 1;
     gameState = 'playing';
 
@@ -395,6 +406,7 @@ function padScore(num) {
 function updateHUD() {
     score1.innerText = padScore(score);
     livesText.innerText = lives;
+    roundText.innerText = waveNumber;
     
     livesIcons.innerHTML = '';
     // Draw life icons minus the active player
@@ -406,12 +418,27 @@ function updateHUD() {
 }
 
 function updateAliens() {
+    // 1. Cálculo de parámetros dinámicos intra-ronda (MÁS SUAVE)
+    if (aliens.length > 0) {
+        let initialCount = 55;
+        let countRatio = aliens.length / initialCount;
+        let inverseRatio = 1 - countRatio; 
+        
+        // La velocidad escala de waveBaseSpeed a un 40% (antes era 20%, ahora es más lento al final)
+        moveInterval = Math.max(1, Math.floor(waveBaseSpeed * (0.4 + 0.6 * countRatio)));
+        
+        // La agresividad escala menos agresivamente durante la horda
+        currentFireChance = alienFireChance * (1 + inverseRatio * 0.8); 
+        currentBulletSpeed = alienBulletSpeed * (1 + inverseRatio * 0.3);
+    }
+
+    // 2. Control del paso de tiempo y movimiento
     ticks++;
     if (ticks >= moveInterval) {
         ticks = 0;
         let hitEdge = false;
         
-        // Check edges
+        // Comprobar bordes
         aliens.forEach(a => {
             if (alienDirection === 1 && a.x + a.width + 10 > canvas.width) hitEdge = true;
             if (alienDirection === -1 && a.x - 10 < 0) hitEdge = true;
@@ -421,39 +448,47 @@ function updateAliens() {
             alienDirection *= -1;
             aliens.forEach(a => {
                 a.y += 20;
-                a.frame = a.frame === 0 ? 1 : 0;
-                
-                // If they reach player level
-                if (a.y + a.height >= player.y) {
-                    gameOver();
-                }
+                a.frame = (a.frame === 0 ? 1 : 0);
+                if (a.y + a.height >= player.y) gameOver();
             });
         } else {
             let stepX = 10 * alienDirection;
             aliens.forEach(a => {
                 a.x += stepX;
-                a.frame = a.frame === 0 ? 1 : 0;
+                a.frame = (a.frame === 0 ? 1 : 0);
             });
         }
 
-        // Alien shooting (Random bottom alien)
-        if (aliens.length > 0 && alienBullets.length < 3) {
-            if (Math.random() < 0.3) {
-                // Find a random alien that has clear line of sight downwards
-                let shooter = aliens[Math.floor(Math.random() * aliens.length)];
-                alienBullets.push(new Bullet(shooter.x + shooter.width/2 - PIXEL_SIZE/2, shooter.y + shooter.height, 5, '#ffffff'));
-            }
-        }
+        // 3. Disparo
+        fireAlienBullet();
     }
 
+    // 4. Manejo de cambio de horda (PROGRESIÓN MÁS GRADUAL)
     if (aliens.length === 0 && gameState === 'playing') {
+        waveNumber++;
+        
+        // En lugar de heredar el máximo pico, subimos la dificultad base un 25% respecto al inicio anterior
+        waveBaseSpeed = Math.max(5, Math.floor(waveBaseSpeed * 0.75)); 
+        alienFireChance = Math.min(0.20, alienFireChance + 0.01);
+        alienBulletSpeed = Math.min(12, alienBulletSpeed + 1);
+
         spawnAliens();
-        moveInterval = Math.max(10, moveInterval - 10);
+        spawnShields(); 
+        updateHUD();
     }
-    
-    // Dynamic move speed based on alien count
-    if (aliens.length > 0) {
-        moveInterval = Math.max(2, Math.floor((aliens.length / 55) * 60));
+}
+
+function fireAlienBullet() {
+    if (aliens.length > 0 && alienBullets.length < 3) {
+        if (Math.random() < currentFireChance) {
+            let shooter = aliens[Math.floor(Math.random() * aliens.length)];
+            alienBullets.push(new Bullet(
+                shooter.x + shooter.width/2 - PIXEL_SIZE/2, 
+                shooter.y + shooter.height, 
+                currentBulletSpeed, 
+                '#ffffff'
+            ));
+        }
     }
 }
 

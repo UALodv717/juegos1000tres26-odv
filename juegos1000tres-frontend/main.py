@@ -21,7 +21,7 @@ Uso:
 """
 
 import os
-from flask import Flask, render_template, jsonify, send_from_directory
+from flask import Flask, render_template, jsonify, send_from_directory, request
 
 # Ajustamos las rutas de templates y static al directorio de la vista
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -105,6 +105,15 @@ def api_juego_detalle(juego_id: str):
         "color":       juego.color,
         "url":         juego.url,
     })
+
+
+@app.route("/api/score", methods=["POST"])
+def api_score():
+    """Simula el guardado de puntuación."""
+    data = request.get_json()
+    print(f"  [API] Puntuación recibida: {data}")
+    return jsonify({"status": "ok", "message": "Score saved"})
+
 
 
 # ── Punto de entrada ───────────────────────────────────────────────────────────
