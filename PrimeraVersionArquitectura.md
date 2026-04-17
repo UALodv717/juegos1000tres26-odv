@@ -1,121 +1,221 @@
-## Primera versión de arquitectura de comunicación
+## Arquitectura de comunicación (versión actual)
 
-Este documento describe cómo está organizada la comunicación entre el juego y los canales de transporte, siguiendo una arquitectura simétrica en backend y frontend.
+Este documento describe la arquitectura de comunicación simétrica en backend y frontend después del refactor basado en eventos por comando.
 
-## 1. Funcionamiento interno
+## 1. Principio general
 
-### 1.1 Principio general
+La arquitectura separa tres responsabilidades:
 
-La idea principal es separar tres responsabilidades:
+1. Lógica de dominio del juego.
+2. Traducción entre objetos de dominio y payload de transporte.
+3. Transporte físico (API, WebSocket, gRPC, etc.).
 
-1. Lógica del juego.
-2. Traducción entre mensajes de dominio y formato de transporte.
-3. Transporte físico de datos (API, WebSocket...).
+Con esto, el juego no depende del canal y el canal no depende de reglas de negocio.
 
-De esta forma, el juego no depende de detalles de red y el canal no depende de reglas de negocio.
+## 2. Componentes
 
-### 1.2 Componentes y roles
+### 2.1 Enviable
 
-1. Enviable
-: Representa un mensaje de dominio intercambiable entre front y back. Cada mensaje concreto implementa su serialización y deserialización.
+Mensaje de dominio intercambiable entre backend y frontend. Cada clase concreta define `toJson()` y `fromJson(...)`.
 
-2. Envio
-: Convierte un Enviable a un payload de transporte.
+### 2.2 Envio
 
-3. Recibo
-: Convierte un payload de transporte en un Enviable.
+Convierte un `Enviable` a un payload de transporte.
 
-4. Conexion
-: Envía y recibe payloads por un canal concreto. También expone su tipo de comunicación para comprobar homología entre extremos.
+### 2.3 Evento<PAYLOAD>
 
-5. Traductor
-: Orquesta Envio + Recibo + Conexion. Es el único punto que conoce toda la cadena de comunicación y valida que los tres usan el mismo tipo de payload.
+Define la lógica de un comando entrante:
 
-6. Juego / JuegoConexion
-: Es la lógica de dominio. Para enviar, delega en el Traductor. Para recibir, el Traductor puede notificar al juego cuando llega un mensaje.
+`hacer(payload, contexto)`
 
-### 1.3 Flujo interno de envío
+El evento decide qué hacer con el mensaje recibido y puede o no producir respuesta.
 
-1. El juego crea un Enviable concreto.
-2. El juego llama a Traductor.enviar(...).
-3. Traductor usa Envio para convertir Enviable a payload.
-4. Traductor delega en Conexion para mandar ese payload.
+### 2.4 ContextoEvento
 
-### 1.4 Flujo interno de recepción
+Permite que el evento publique la respuesta principal sin acoplarse al transporte:
 
-1. Conexion recibe un payload del canal.
-2. Traductor obtiene ese payload con recibir(...).
-3. Traductor usa Recibo para convertir payload a Enviable.
-4. Traductor devuelve el mensaje al juego o notifica directamente al juego mediante recibirYNotificarJuego(...).
+`contexto.enviar(enviable)`
 
-### 1.5 Homología de canal
+Si el evento no llama a `enviar`, la operación se considera sin respuesta de negocio.
 
-Cada Conexion declara su tipo de comunicación (por ejemplo API o WEBSOCKET) y soporta una verificación ComprobarHomologo para asegurar que frontend y backend están hablando por el mismo tipo de canal.
+### 2.5 Recibo<PAYLOAD>
 
-## 2. Cómo se comunican frontend y backend
+Es el dispatcher de entrada por comando (Strategy):
 
-La arquitectura es simétrica: ambos lados tienen Enviable, Envio, Recibo, Traductor y Conexion.
+1. Mantiene un diccionario `comando -> evento`.
+2. Se construye de forma inmutable con `conEvento(...)`.
+3. En `procesar(payload, contexto)`, extrae el comando y ejecuta el evento correspondiente.
 
-### 2.1 Comunicación de frontend hacia backend
+### 2.6 Conexion<PAYLOAD>
 
-1. Frontend crea un Enviable de dominio.
-2. Frontend usa su Traductor para transformarlo y enviarlo por su Conexion.
-3. Backend recibe el payload por su Conexion equivalente.
-4. Backend usa su Recibo para reconstruir el Enviable y procesarlo en Juego.
+Transporta payloads y expone tipo de comunicación (`API`, `WEBSOCKET`, etc.) con verificación de homología entre extremos.
 
-### 2.2 Comunicación de backend hacia frontend
+### 2.7 Traductor<PAYLOAD>
 
-1. Backend genera un Enviable como respuesta o evento de juego.
-2. Backend lo envía con su Traductor.
-3. Frontend recibe el payload por su Conexion.
-4. Frontend reconstruye el Enviable con su Recibo y actualiza estado, UI o flujo de partida.
+Orquesta `Envio + Recibo + Conexion` y valida compatibilidad de payload.
 
-### 2.3 Compatibilidad de payload
+Métodos principales:
 
-El contrato exige que Envio, Recibo y Conexion usen el mismo tipo de payload dentro de cada lado.
+1. `enviar(enviable)`.
+2. `procesar(payload)`.
+3. `recibirYProcesar()`.
+4. `recibirProcesarYResponder()`.
 
-Ejemplo actual:
+## 3. Flujos
 
-1. Payload: string JSON.
-2. Envio: Enviable -> string JSON.
-3. Recibo: string JSON -> Enviable.
-4. Conexion: transporta string JSON.
+### 3.1 Flujo de envío
 
-En el futuro se puede cambiar a otro payload (por ejemplo un objeto/protobuf de gRPC) sin cambiar la lógica del juego, solo cambiando implementaciones de Envio, Recibo y Conexion.
+1. El juego crea un `Enviable`.
+2. Llama a `Traductor.enviar(...)`.
+3. `Envio` traduce a payload.
+4. `Conexion` transmite el payload.
 
-## 3. Qué actualizar al crear un nuevo juego
+### 3.2 Flujo de recepción con respuesta
 
-Al añadir un juego nuevo, este es el mínimo recomendado.
+1. Llega payload a `Conexion`.
+2. `Traductor` lo pasa a `Recibo.procesar(payload, contexto)`.
+3. `Recibo` resuelve el comando y llama a `Evento.hacer(...)`.
+4. El evento ejecuta lógica de dominio y llama `contexto.enviar(...)`.
+5. `Traductor` serializa esa respuesta con `Envio` y la devuelve/envía por `Conexion`.
 
-### 3.1 Backend
+### 3.3 Flujo de recepción sin respuesta
 
-1. Crear clase de juego concreta que extienda Juego.
-2. Implementar procesamiento de mensajes entrantes del juego.
-3. Crear mensajes Enviable concretos del juego.
-4. Crear Envio específico del juego. (Depende)
-5. Crear Recibo específico del juego.
-6. Crear o reutilizar Conexion según canal (API/WebSocket/u otro).
-7. Instanciar Traductor con Conexion + Envio + Recibo del nuevo juego.
+Mismo flujo anterior, pero el evento no llama a `contexto.enviar(...)`. El resultado es una operación sin respuesta de negocio.
 
-### 3.2 Frontend
+## 4. Simetría frontend-backend
 
-1. Crear clase de juego concreta (por ejemplo extendiendo JuegoConexion).
-2. Crear mensajes Enviable concretos del juego.
-3. Crear Envio específico del juego.
-4. Crear Recibo específico del juego.
-5. Crear o reutilizar Conexion según canal.
-6. Instanciar Traductor con Conexion + Envio + Recibo.
+Ambos lados siguen el mismo modelo:
 
-### 3.3 Regla de oro
+1. `Enviable` para mensajes de dominio.
+2. `Evento` para comandos de entrada.
+3. `Recibo` como diccionario inmutable de eventos.
+4. `Traductor` como orquestador único.
+5. `Conexion` como adaptación al canal.
 
-Cada juego debe tener su propia traducción de mensajes de dominio (Envio/Recibo), mientras que la infraestructura de transporte (Conexion) puede reutilizarse si el canal es el mismo.
+Esto permite cambiar de API a WebSocket/gRPC sin reescribir la lógica de juego.
 
-## 4. Posibles cambios
+## 5. Nota sobre JuegoConexion
 
-La versión actual esta pensada para en el caso de API solo desplegar un único endpoint y que sea Recibo el que se encargue de traducirlo a un evento.
+`JuegoConexion` en frontend no es obligatorio. Si el juego puede usar `Traductor` directamente, se puede eliminar esa clase contenedora para simplificar capas.
 
-Se puede hacer que traductor tenga la posibilidad de que otras clases se suscriban indicando el comando que debe tener el json al que se le tendría que llamar, de esta forma se puede utilizar el mismo Recibo siempre y es más fácil añadir más.
+## 6. Flujo de trabajo para un juego nuevo
 
-Es decir, recibo o traductor tendrán un HashMap<String,Event> y Event será una interfaz en la que se definira que hacer cuando llegue el comando string.<br>
-De forma que la comunicación entre esta capa de envio y el juego será solo en traductor a traves de Juego y Event.
+### 6.1 Crear Enviables
+
+1. Definir los mensajes de dominio necesarios.
+2. Implementar `toJson()` y `fromJson(...)`.
+3. Separar, si aplica, mensajes de entrada y de salida.
+
+### 6.2 Crear Eventos
+
+1. Crear una clase por comando (`Evento<PAYLOAD>`).
+2. Implementar `hacer(payload, contexto)`.
+3. Dentro de `hacer`, parsear/validar payload y delegar la lógica a un método interno tipado.
+4. En el método interno, recibir datos normales y modelo de juego.
+5. Si hay respuesta de negocio, llamar a `contexto.enviar(enviableRespuesta)`.
+
+### 6.3 Registrar Eventos en Recibo
+
+1. Crear instancia de `Recibo` (por ejemplo `JsonRecibo`).
+2. Registrar comandos encadenando `conEvento("COMANDO", evento)`.
+3. Resultado: un diccionario inmutable `comando -> evento`.
+
+### 6.4 Montar Traductor
+
+1. Elegir `Conexion` del canal (API/WebSocket/gRPC).
+2. Elegir `Envio` para ese payload.
+3. Usar el `Recibo` ya configurado con eventos.
+4. Construir `Traductor(conexion, envio, recibo)`.
+
+### 6.5 Ejecutar desde el juego o endpoint
+
+1. Para salida explícita: `traductor.enviar(enviable)`.
+2. Para entrada ya recibida: `traductor.procesar(payload)`.
+3. Para bucle de entrada+salida automática: `traductor.recibirProcesarYResponder()`.
+
+Con esto, añadir comandos nuevos es incremental: crear evento, registrar en el diccionario y listo.
+
+## 7. Diagramas de secuencia (PlantUML)
+
+### 7.1 Envio al otro sistema
+
+```plantuml
+@startuml
+title Envio al otro sistema
+
+participant Juego
+participant Traductor
+participant Envio
+participant Conexion
+
+Juego -> Traductor : enviar(enviable)
+Traductor -> Envio : traducirEnviableAFormato(enviable)
+Envio --> Traductor : payload
+Traductor -> Conexion : enviar(payload)
+
+@enduml
+```
+
+### 7.2 Recepcion de mensaje (con respuesta)
+
+```plantuml
+@startuml
+title Recepcion de mensaje (con respuesta)
+
+participant Conexion
+participant Traductor
+participant Recibo
+participant Evento
+participant ContextoEvento
+participant Envio
+
+Traductor -> Conexion : recibir()
+Conexion --> Traductor : payload
+
+Traductor -> Recibo : procesar(payload, contexto)
+Recibo -> Evento : hacer(payload, contexto)
+Evento -> ContextoEvento : enviar(enviableRespuesta)
+
+Recibo --> Traductor : fin de proceso
+Traductor -> ContextoEvento : getRespuesta()
+ContextoEvento --> Traductor : enviableRespuesta
+
+Traductor -> Envio : traducirEnviableAFormato(enviableRespuesta)
+Envio --> Traductor : payloadRespuesta
+Traductor -> Conexion : enviar(payloadRespuesta)
+
+@enduml
+```
+
+### 7.3 Recepcion de mensaje (sin respuesta)
+
+```plantuml
+@startuml
+title Recepcion de mensaje (sin respuesta)
+
+participant Conexion
+participant Traductor
+participant Recibo
+participant Evento
+participant ContextoEvento
+
+Traductor -> Conexion : recibir()
+Conexion --> Traductor : payload
+
+Traductor -> Recibo : procesar(payload, contexto)
+Recibo -> Evento : hacer(payload, contexto)
+Evento --> Recibo : fin de logica
+
+Recibo --> Traductor : fin de proceso
+Traductor -> ContextoEvento : getRespuesta()
+ContextoEvento --> Traductor : vacio
+
+note over Traductor
+No se envia respuesta de negocio
+porque el evento no llamo
+a contexto.enviar(...)
+end note
+
+@enduml
+```
 
