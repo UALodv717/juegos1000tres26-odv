@@ -1,4 +1,4 @@
-package com.juegos1000tres.juegos1000tres_backend.comunicacion.implementaciones;
+package com.juegos1000tres.juegos1000tres_backend.juegos.SpaceInvaders.pruebas.comunicacion;
 
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -11,17 +11,17 @@ import com.juegos1000tres.juegos1000tres_backend.comunicacion.ContextoEvento;
 import com.juegos1000tres.juegos1000tres_backend.comunicacion.Evento;
 import com.juegos1000tres.juegos1000tres_backend.comunicacion.Recibo;
 
-public class JsonRecibo implements Recibo<String> {
+public final class JsonReciboPruebas extends Recibo<String> {
 
     private static final Pattern PATRON_COMANDO = Pattern.compile("\\\"comando\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
 
     private final Map<String, Evento<String>> eventosPorComando;
 
-    public JsonRecibo() {
+    public JsonReciboPruebas() {
         this(Map.of());
     }
 
-    private JsonRecibo(Map<String, Evento<String>> eventosPorComando) {
+    private JsonReciboPruebas(Map<String, Evento<String>> eventosPorComando) {
         this.eventosPorComando = Map.copyOf(eventosPorComando);
     }
 
@@ -32,17 +32,19 @@ public class JsonRecibo implements Recibo<String> {
 
         Map<String, Evento<String>> nuevoMapa = new LinkedHashMap<>(this.eventosPorComando);
         nuevoMapa.put(comandoNormalizado, eventoNoNulo);
-
-        return new JsonRecibo(nuevoMapa);
+        return new JsonReciboPruebas(nuevoMapa);
     }
 
     @Override
     public void procesar(String payload, ContextoEvento contexto) {
         Objects.requireNonNull(contexto, "El contexto de evento es obligatorio");
 
+        if (payload == null || payload.isBlank()) {
+            throw new IllegalArgumentException("El payload entrante no puede estar vacio");
+        }
+
         String comando = extraerComando(payload);
         Evento<String> evento = this.eventosPorComando.get(normalizarComando(comando));
-
         if (evento == null) {
             throw new IllegalArgumentException("No existe un evento registrado para el comando: " + comando);
         }
@@ -56,10 +58,6 @@ public class JsonRecibo implements Recibo<String> {
     }
 
     private String extraerComando(String payload) {
-        if (payload == null || payload.isBlank()) {
-            throw new IllegalArgumentException("El payload entrante no puede estar vacio");
-        }
-
         Matcher matcher = PATRON_COMANDO.matcher(payload);
         if (!matcher.find()) {
             throw new IllegalArgumentException("El payload no incluye el campo comando");

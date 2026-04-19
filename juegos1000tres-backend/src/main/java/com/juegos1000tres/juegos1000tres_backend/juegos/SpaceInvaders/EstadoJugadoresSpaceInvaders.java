@@ -30,7 +30,7 @@ public class EstadoJugadoresSpaceInvaders extends Enviable {
     }
 
     @Override
-    public String toJson() {
+    public Object out() {
         StringBuilder json = new StringBuilder();
         json.append("{\"jugadores\":[");
 
@@ -56,7 +56,16 @@ public class EstadoJugadoresSpaceInvaders extends Enviable {
     }
 
     @Override
-    public void fromJson(String json) {
+    public void in(Object entrada) {
+        if (entrada == null) {
+            this.jugadores = new ArrayList<>();
+            return;
+        }
+
+        if (!(entrada instanceof String json)) {
+            throw new IllegalArgumentException("Se esperaba un String para deserializar el estado de jugadores");
+        }
+
         if (json == null || json.isBlank()) {
             this.jugadores = new ArrayList<>();
             return;

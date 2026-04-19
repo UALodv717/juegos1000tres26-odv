@@ -1,6 +1,6 @@
 ## Arquitectura de comunicación (versión actual)
 
-Este documento describe la arquitectura de comunicación simétrica en backend y frontend después del refactor basado en eventos por comando.
+Este documento describe la arquitectura de comunicación simétrica backend/frontend, incluyendo el comportamiento real de API con short polling y WebSocket push.
 
 ## 1. Principio general
 
@@ -16,132 +16,159 @@ Con esto, el juego no depende del canal y el canal no depende de reglas de negoc
 
 ### 2.1 Enviable
 
-Mensaje de dominio intercambiable entre backend y frontend. Cada clase concreta define `toJson()` y `fromJson(...)`.
+Mensaje de dominio intercambiable entre backend y frontend. Cada clase concreta define out() e in(...).
 
 ### 2.2 Envio
 
-Convierte un `Enviable` a un payload de transporte.
+Convierte un Enviable a payload de transporte.
 
 ### 2.3 Evento<PAYLOAD>
 
-Define la lógica de un comando entrante:
-
-`hacer(payload, contexto)`
-
-El evento decide qué hacer con el mensaje recibido y puede o no producir respuesta.
+Define la lógica de un comando entrante mediante hacer(payload, contexto). El evento puede o no producir respuesta.
 
 ### 2.4 ContextoEvento
 
-Permite que el evento publique la respuesta principal sin acoplarse al transporte:
+Permite publicar la respuesta principal sin acoplarse al transporte: contexto.enviar(enviable).
 
-`contexto.enviar(enviable)`
-
-Si el evento no llama a `enviar`, la operación se considera sin respuesta de negocio.
+Si el evento no llama a enviar(...), se considera operación sin respuesta de negocio.
 
 ### 2.5 Recibo<PAYLOAD>
 
-Es el dispatcher de entrada por comando (Strategy):
+Dispatcher de entrada por comando (Strategy):
 
-1. Mantiene un diccionario `comando -> evento`.
-2. Se construye de forma inmutable con `conEvento(...)`.
-3. En `procesar(payload, contexto)`, extrae el comando y ejecuta el evento correspondiente.
+1. Mantiene un diccionario comando -> evento.
+2. Se construye de forma inmutable con conEvento(...).
+3. En procesar(payload, contexto), extrae comando y ejecuta evento.
+
+Politica actual en frontend (JsonRecibo):
+
+1. Si el comando no existe en el diccionario, el mensaje se descarta silenciosamente.
+2. No se lanza error por comando no registrado.
 
 ### 2.6 Conexion<PAYLOAD>
 
-Transporta payloads y expone tipo de comunicación (`API`, `WEBSOCKET`, etc.) con verificación de homología entre extremos.
+Transporta payloads, expone tipo de comunicacion (API, WEBSOCKET, etc.) y metadatos de sala:
+
+1. getSalaId()
+2. getCanalSala()
 
 ### 2.7 Traductor<PAYLOAD>
 
-Orquesta `Envio + Recibo + Conexion` y valida compatibilidad de payload.
+Orquesta Envio + Recibo + Conexion y valida compatibilidad de payload.
 
-Métodos principales:
+Metodos principales:
 
-1. `enviar(enviable)`.
-2. `procesar(payload)`.
-3. `recibirYProcesar()`.
-4. `recibirProcesarYResponder()`.
+1. enviar(enviable)
+2. procesar(payload)
+3. recibirYProcesar()
+4. recibirProcesarYResponder()
 
-## 3. Flujos
+### 2.8 Configuración externa de transporte
 
-### 3.1 Flujo de envío
+Backend usa configuracion externa para rutas, host y puertos en:
 
-1. El juego crea un `Enviable`.
-2. Llama a `Traductor.enviar(...)`.
-3. `Envio` traduce a payload.
-4. `Conexion` transmite el payload.
+1. config/comunicacion-runtime.properties
 
-### 3.2 Flujo de recepción con respuesta
+Incluye, entre otros:
 
-1. Llega payload a `Conexion`.
-2. `Traductor` lo pasa a `Recibo.procesar(payload, contexto)`.
-3. `Recibo` resuelve el comando y llama a `Evento.hacer(...)`.
-4. El evento ejecuta lógica de dominio y llama `contexto.enviar(...)`.
-5. `Traductor` serializa esa respuesta con `Envio` y la devuelve/envía por `Conexion`.
+1. api.endpoint.salaTemplate
+2. api.endpoint.actualizaciones.salaTemplate
+3. ws.canal.salaTemplate
+4. api/ws host y puertos
 
-### 3.3 Flujo de recepción sin respuesta
+## 3. Comportamiento por canal
 
-Mismo flujo anterior, pero el evento no llama a `contexto.enviar(...)`. El resultado es una operación sin respuesta de negocio.
+### 3.1 API (request/response + short polling)
 
-## 4. Simetría frontend-backend
+Se usan dos endpoints por sala:
 
-Ambos lados siguen el mismo modelo:
+1. Endpoint de eventos (entrada al backend): POST de mensajes frontend -> backend.
+2. Endpoint de actualizaciones (salida a frontend): GET para short polling frontend -> backend.
 
-1. `Enviable` para mensajes de dominio.
-2. `Evento` para comandos de entrada.
-3. `Recibo` como diccionario inmutable de eventos.
-4. `Traductor` como orquestador único.
-5. `Conexion` como adaptación al canal.
+Flujo esperado:
 
-Esto permite cambiar de API a WebSocket/gRPC sin reescribir la lógica de juego.
+1. Front envia comando con Traductor.enviar(...).
+2. Backend procesa el evento correspondiente.
+3. Si el backend necesita enviar respuesta/actualizacion, llama a Traductor.enviar(...) o usa respuesta de negocio.
+4. Front recibe esa actualizacion en el polling periodico y la mete en cola de Conexion.
+5. Traductor del front consume recibir() y ejecuta Recibo.procesar(...).
 
-## 5. Nota sobre JuegoConexion
+### 3.2 WebSocket (push bidireccional)
 
-`JuegoConexion` en frontend no es obligatorio. Si el juego puede usar `Traductor` directamente, se puede eliminar esa clase contenedora para simplificar capas.
+En WebSocket no hay polling:
 
-## 6. Flujo de trabajo para un juego nuevo
+1. Cualquier extremo envia por conexion abierta.
+2. El receptor encola y procesa con Traductor + Recibo.
+3. La respuesta puede ser:
+1. Automatica con recibirProcesarYResponder().
+2. Explicita cuando el evento/servicio decida emitir un mensaje posterior.
 
-### 6.1 Crear Enviables
+## 4. Flujos de procesamiento
 
-1. Definir los mensajes de dominio necesarios.
-2. Implementar `toJson()` y `fromJson(...)`.
-3. Separar, si aplica, mensajes de entrada y de salida.
+### 4.1 Envio
 
-### 6.2 Crear Eventos
+1. Juego crea Enviable.
+2. Llama a Traductor.enviar(...).
+3. Envio traduce a payload.
+4. Conexion transmite payload.
 
-1. Crear una clase por comando (`Evento<PAYLOAD>`).
-2. Implementar `hacer(payload, contexto)`.
-3. Dentro de `hacer`, parsear/validar payload y delegar la lógica a un método interno tipado.
-4. En el método interno, recibir datos normales y modelo de juego.
-5. Si hay respuesta de negocio, llamar a `contexto.enviar(enviableRespuesta)`.
+### 4.2 Recepcion con respuesta de negocio
 
-### 6.3 Registrar Eventos en Recibo
+1. Conexion entrega payload a Traductor.
+2. Traductor llama a Recibo.procesar(payload, contexto).
+3. Evento.hacer(...) ejecuta logica.
+4. Evento llama contexto.enviar(enviableRespuesta).
+5. Traductor serializa y envia la respuesta.
 
-1. Crear instancia de `Recibo` (por ejemplo `JsonRecibo`).
-2. Registrar comandos encadenando `conEvento("COMANDO", evento)`.
-3. Resultado: un diccionario inmutable `comando -> evento`.
+### 4.3 Recepcion sin respuesta de negocio
 
-### 6.4 Montar Traductor
+Mismo flujo, pero el evento no llama a contexto.enviar(...).
 
-1. Elegir `Conexion` del canal (API/WebSocket/gRPC).
-2. Elegir `Envio` para ese payload.
-3. Usar el `Recibo` ya configurado con eventos.
-4. Construir `Traductor(conexion, envio, recibo)`.
+### 4.4 Recepcion de comando no registrado
 
-### 6.5 Ejecutar desde el juego o endpoint
+Politica actual (frontend JsonRecibo):
 
-1. Para salida explícita: `traductor.enviar(enviable)`.
-2. Para entrada ya recibida: `traductor.procesar(payload)`.
-3. Para bucle de entrada+salida automática: `traductor.recibirProcesarYResponder()`.
+1. Se descarta silenciosamente.
+2. No se interrumpe el bucle de recepcion.
 
-Con esto, añadir comandos nuevos es incremental: crear evento, registrar en el diccionario y listo.
+## 5. Flujo de trabajo para un juego nuevo
 
-## 7. Diagramas de secuencia (PlantUML)
+### 5.1 Crear Enviables
 
-### 7.1 Envio al otro sistema
+1. Definir mensajes de dominio.
+2. Implementar out() e in(...).
+
+### 5.2 Crear Eventos
+
+1. Crear una clase por comando (Evento<PAYLOAD>).
+2. Implementar hacer(payload, contexto).
+3. Parsear/validar payload y delegar a metodos tipados.
+4. Usar contexto.enviar(...) solo cuando haya respuesta de negocio.
+
+### 5.3 Registrar Eventos en Recibo
+
+1. Crear Recibo (por ejemplo JsonRecibo).
+2. Registrar comandos con conEvento("COMANDO", evento).
+
+### 5.4 Montar Traductor
+
+1. Elegir Conexion (ApiConexion o WebSocketConexion).
+2. Elegir Envio (JsonEnvio u otro).
+3. Usar Recibo configurado.
+4. Construir Traductor(conexion, envio, recibo).
+
+### 5.5 Definir loop de entrada
+
+1. API: conectar() inicia polling en frontend y el juego consume con recibirYProcesar() o recibirProcesarYResponder().
+2. WebSocket: consumir mensajes entrantes por conexion abierta con los mismos metodos de Traductor.
+
+## 6. Diagramas de secuencia (PlantUML)
+
+### 6.1 Envio generico
 
 ```plantuml
 @startuml
-title Envio al otro sistema
+title Envio generico
 
 participant Juego
 participant Traductor
@@ -156,65 +183,146 @@ Traductor -> Conexion : enviar(payload)
 @enduml
 ```
 
-### 7.2 Recepcion de mensaje (con respuesta)
+### 6.2 API con short polling
 
 ```plantuml
 @startuml
-title Recepcion de mensaje (con respuesta)
+title API con short polling
 
-participant Conexion
-participant Traductor
-participant Recibo
-participant Evento
-participant ContextoEvento
-participant Envio
+participant FrontJuego
+participant FrontTraductor
+participant FrontApiConexion
+participant ApiEventos as "Backend API eventos"
+participant ApiActualizaciones as "Backend API actualizaciones"
+participant BackTraductor
+participant BackRecibo
 
-Traductor -> Conexion : recibir()
-Conexion --> Traductor : payload
+FrontJuego -> FrontTraductor : enviar(enviable)
+FrontTraductor -> FrontApiConexion : POST /eventos
+FrontApiConexion -> ApiEventos : payload
 
-Traductor -> Recibo : procesar(payload, contexto)
-Recibo -> Evento : hacer(payload, contexto)
-Evento -> ContextoEvento : enviar(enviableRespuesta)
+ApiEventos -> BackTraductor : procesar payload
+BackTraductor -> BackRecibo : procesar(payload, contexto)
 
-Recibo --> Traductor : fin de proceso
-Traductor -> ContextoEvento : getRespuesta()
-ContextoEvento --> Traductor : enviableRespuesta
+BackTraductor -> ApiActualizaciones : publica actualizacion
 
-Traductor -> Envio : traducirEnviableAFormato(enviableRespuesta)
-Envio --> Traductor : payloadRespuesta
-Traductor -> Conexion : enviar(payloadRespuesta)
+loop cada pollingIntervalMs
+	FrontApiConexion -> ApiActualizaciones : GET /actualizaciones
+	ApiActualizaciones --> FrontApiConexion : payload o 204
+end
+
+FrontApiConexion -> FrontTraductor : recibir()
+FrontTraductor -> FrontTraductor : procesar(payload)
 
 @enduml
 ```
 
-### 7.3 Recepcion de mensaje (sin respuesta)
+### 6.3 WebSocket push bidireccional
 
 ```plantuml
 @startuml
-title Recepcion de mensaje (sin respuesta)
+title WebSocket push bidireccional
+
+participant ClienteA
+participant TraductorA
+participant WebSocketA
+participant WebSocketB
+participant TraductorB
+participant ClienteB
+
+ClienteA -> TraductorA : enviar(enviable)
+TraductorA -> WebSocketA : enviar(payload)
+WebSocketA -> WebSocketB : frame ws
+WebSocketB -> TraductorB : recibir()
+TraductorB -> TraductorB : procesar(payload)
+TraductorB -> ClienteB : evento ejecutado
+
+@enduml
+```
+
+### 6.4 Comando no registrado (descartado)
+
+```plantuml
+@startuml
+title Comando no registrado (descartado)
 
 participant Conexion
 participant Traductor
 participant Recibo
-participant Evento
-participant ContextoEvento
 
 Traductor -> Conexion : recibir()
-Conexion --> Traductor : payload
-
+Conexion --> Traductor : payload(comando desconocido)
 Traductor -> Recibo : procesar(payload, contexto)
-Recibo -> Evento : hacer(payload, contexto)
-Evento --> Recibo : fin de logica
+Recibo --> Traductor : return (sin error)
 
-Recibo --> Traductor : fin de proceso
-Traductor -> ContextoEvento : getRespuesta()
-ContextoEvento --> Traductor : vacio
-
-note over Traductor
-No se envia respuesta de negocio
-porque el evento no llamo
-a contexto.enviar(...)
+note over Recibo
+Si no existe comando en el map,
+se descarta el mensaje.
 end note
+
+@enduml
+```
+
+## 7. Diagrama de clases (PlantUML)
+
+```plantuml
+@startuml
+title Estructura base de comunicacion
+
+abstract class Enviable {
+	+out()
+	+in(entrada)
+}
+
+abstract class Envio~PAYLOAD~ {
+	+traducirEnviableAFormato(enviable)
+}
+
+interface Evento~PAYLOAD~ {
+	+hacer(payload, contexto)
+}
+
+class ContextoEvento {
+	+enviar(enviable)
+	+getRespuesta()
+}
+
+abstract class Recibo~PAYLOAD~ {
+	+conEvento(comando, evento)
+	+procesar(payload, contexto)
+}
+
+abstract class Conexion~PAYLOAD~ {
+	+conectar()
+	+desconectar()
+	+enviar(payload)
+	+recibir()
+	+getTipoComunicacion()
+	+getSalaId()
+	+getCanalSala()
+}
+
+class Traductor~PAYLOAD~ {
+	+enviar(enviable)
+	+procesar(payload)
+	+recibirYProcesar()
+	+recibirProcesarYResponder()
+}
+
+class ApiConexion
+class WebSocketConexion
+class JsonRecibo
+class JsonEnvio
+
+Traductor o-- Conexion
+Traductor o-- Envio
+Traductor o-- Recibo
+Recibo --> Evento
+Evento --> ContextoEvento
+JsonRecibo --|> Recibo
+JsonEnvio --|> Envio
+ApiConexion --|> Conexion
+WebSocketConexion --|> Conexion
 
 @enduml
 ```

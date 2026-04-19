@@ -9,7 +9,7 @@ import { TextoEnviable } from "./mensajes/TextoEnviable.js";
 class EventoEcoTexto implements Evento<string> {
   hacer(payload: string, contexto: ContextoEvento): void {
     const mensaje = new TextoEnviable();
-    mensaje.fromJson(payload);
+    mensaje.in(payload);
     contexto.enviar(new TextoEnviable(`Eco: ${mensaje.texto}`));
   }
 }

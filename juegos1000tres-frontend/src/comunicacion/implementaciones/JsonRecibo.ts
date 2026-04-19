@@ -3,11 +3,11 @@ import { Evento } from "../Evento.js";
 import { Recibo } from "../Recibo.js";
 
 export class JsonRecibo extends Recibo<string> {
-  private readonly eventosPorComando: ReadonlyMap<string, Evento<string>>;
+  private readonly eventosPorComando: Map<string, Evento<string>>;
 
-  constructor(eventosPorComando?: ReadonlyMap<string, Evento<string>>) {
+  constructor(eventosPorComando: Map<string, Evento<string>> = new Map()) {
     super();
-    this.eventosPorComando = new Map(eventosPorComando ?? []);
+    this.eventosPorComando = new Map(eventosPorComando);
   }
 
   conEvento(comando: string, evento: Evento<string>): Recibo<string> {
@@ -28,14 +28,14 @@ export class JsonRecibo extends Recibo<string> {
     }
 
     if (typeof payload !== "string") {
-      throw new Error("El payload JSON debe ser un string");
+      throw new Error("El payload JSON debe ser string");
     }
 
     const comando = this.extraerComando(payload);
     const evento = this.eventosPorComando.get(this.normalizarComando(comando));
 
     if (!evento) {
-      throw new Error(`No existe un evento registrado para el comando: ${comando}`);
+      return;
     }
 
     await evento.hacer(payload, contexto);
@@ -52,7 +52,7 @@ export class JsonRecibo extends Recibo<string> {
 
     let objeto: unknown;
     try {
-      objeto = JSON.parse(payload);
+      objeto = JSON.parse(payload) as unknown;
     } catch {
       throw new Error("El payload no es un JSON valido");
     }

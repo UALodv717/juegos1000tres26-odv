@@ -21,17 +21,24 @@ Uso:
 """
 
 import os
+
 from flask import Flask, render_template, jsonify, send_from_directory, request
 
 # Ajustamos las rutas de templates y static al directorio de la vista
 BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR  = os.path.join(BASE_DIR, "src", "menu", "vistaSeleccionJuego")
 STATIC_DIR    = os.path.join(BASE_DIR, "src", "menu", "vistaSeleccionJuego")
+PRUEBAS_DIR   = os.path.join(BASE_DIR, "src", "pruebas")
+SPACE_INVADERS_DIR = os.path.join(BASE_DIR, "src", "juegos", "SpaceInvaders")
 
 # Importamos el catálogo de juegos
 import sys
 sys.path.insert(0, TEMPLATE_DIR)
+sys.path.insert(0, PRUEBAS_DIR)
+sys.path.insert(0, SPACE_INVADERS_DIR)
 from listaJuegos import ListaJuegos  # noqa: E402
+from sala_mentira import SalaMentiraPruebas  # noqa: E402
+from space_invaders_blueprint import create_space_invaders_blueprint  # noqa: E402
 
 # ── Configuración Flask ───────────────────────────────────────────────────────
 app = Flask(
@@ -40,27 +47,22 @@ app = Flask(
     static_folder=STATIC_DIR,
     static_url_path="/static_menu",
 )
+app.config["SECRET_KEY"] = os.getenv("ARCADE_HUB_SECRET", "arcade-hub-dev-secret")
 
 catalogo = ListaJuegos()
 
 # ── Blueprints de Juegos ──────────────────────────────────────────────────────
-from flask import Blueprint
-
-# Space Invaders Blueprint - Servidor interno para el iframe
-space_invaders_bp = Blueprint(
-    'space_invaders', 
-    __name__,
-    template_folder=os.path.join(BASE_DIR, "src", "juegos", "SpaceInvaders", "templates"),
-    static_folder=os.path.join(BASE_DIR, "src", "juegos", "SpaceInvaders", "static"),
-    static_url_path="/juegos/SpaceInvaders/static"
-)
-
-@space_invaders_bp.route("/")
-def space_invaders_home():
-    return render_template("space_invaders.html")
+space_invaders_bp = create_space_invaders_blueprint(BASE_DIR)
 
 # Registramos el servidor interno del juego
 app.register_blueprint(space_invaders_bp, url_prefix="/server/space_invaders")
+
+# Sala de mentira para pruebas manuales (aislada y facil de eliminar)
+sala_mentira_pruebas = SalaMentiraPruebas(BASE_DIR)
+app.register_blueprint(
+    sala_mentira_pruebas.crear_blueprint(),
+    url_prefix=SalaMentiraPruebas.URL_PREFIX,
+)
 
 
 # ── Rutas del Hub (Menú Principal) ───────────────────────────────────────────
@@ -123,6 +125,7 @@ if __name__ == "__main__":
     print("  [*] ARCADE HUB - Servidor de menu")
     print(sep)
     print("  URL:  http://localhost:8080")
+    print("  Sala de pruebas: http://localhost:8080/pruebas/sala-mentira")
     print(f"  Juegos disponibles: {len(catalogo.obtener_todos())}")
     for j in catalogo.obtener_todos():
         print(f"    - {j.titulo}  ->  {j.url}")
